@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analytics - {{ store_code }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <div class="container analytics-page">
+        <header>
+            <a href="/" class="back-link">&larr; Back to Dashboard</a>
+            <h1 id="storeTitle">Store Analytics</h1>
+        </header>
+
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <h3>Store Age</h3>
+                <p id="kpiAge">Loading...</p>
+            </div>
+            <div class="kpi-card">
+                <h3>Lifetime Revenue</h3>
+                <p id="kpiLifetime">Loading...</p>
+            </div>
+            <div class="kpi-card">
+                <h3>Avg. Monthly Revenue</h3>
+                <p id="kpiAvg">Loading...</p>
+            </div>
+            <div class="kpi-card">
+                <h3>Efficiency Score</h3>
+                <p id="kpiEfficiency">Loading...</p>
+                <small>Rev / (Chem + Pkg)</small>
+            </div>
+            <div class="kpi-card">
+                <h3>Best Month</h3>
+                <p id="kpiBestMonth">Loading...</p>
+                <small id="kpiBestMonthVal">Loading...</small>
+            </div>
+        </div>
+
+        <div class="charts-grid">
+            <div class="chart-card">
+                <h2>Yearly Performance (Revenue)</h2>
+                <canvas id="revenueChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h2>Expense Ratios (vs Revenue)</h2>
+                <canvas id="expensesChart"></canvas>
+            </div>
+            <div class="chart-card full-width">
+                <h2>Revenue Growth %</h2>
+                <canvas id="growthChart"></canvas>
+            </div>
+            <div class="chart-card full-width">
+                <h2>Delivery Performance (% within TAT)</h2>
+                <canvas id="tatChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const storeCode = "{{ store_code }}";
+
+        async function loadCharts() {
+            const res = await fetch(`/api/stats/${storeCode}`);
+            const data = await res.json();
+
+            document.getElementById('storeTitle').innerText = `${data.store_name} (${storeCode})`;
+
+            // Populate KPIs
+            document.getElementById('kpiAge').innerText = data.kpis.store_age;
+            document.getElementById('kpiLifetime').innerText = '₹ ' + data.kpis.lifetime_revenue.toLocaleString('en-IN');
+            document.getElementById('kpiAvg').innerText = '₹ ' + Math.round(data.kpis.avg_monthly_revenue).toLocaleString('en-IN');
+            document.getElementById('kpiEfficiency').innerText = data.kpis.efficiency_score.toFixed(2) + 'x';
+            document.getElementById('kpiBestMonth').innerText = data.kpis.highest_revenue_month.month;
+            document.getElementById('kpiBestMonthVal').innerText = '₹ ' + data.kpis.highest_revenue_month.amount.toLocaleString('en-IN');
+
+            // Common Chart Options
+            const commonOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'bottom' }
+                }
+            };
+
+            // 1. Revenue Chart
+            new Chart(document.getElementById('revenueChart'), {
+                type: 'bar',
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        label: 'Revenue (₹)',
+                        data: data.revenue,
+                        backgroundColor: '#8d99ae', // Earthy Blue-Grey
+                        borderRadius: 4
+                    }]
+                },
+                options: commonOptions
+            });
+
+            // 2. Expense Ratios Chart
+            new Chart(document.getElementById('expensesChart'), {
+                type: 'bar',
+                data: {
+                    labels: data.labels,
+                    datasets: [
+                        {
+                            label: 'Chemical Cost %',
+                            data: data.chemical_pct,
+                            backgroundColor: '#e07a5f', // Terracotta
+                            borderRadius: 4
+                        },
+                        {
+                            label: 'Packaging Cost %',
+                            data: data.packaging_pct,
+                            backgroundColor: '#81b29a', // Sage Green
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    ...commonOptions,
+                    scales: {
+                        y: {
+                            ticks: {
+                                callback: function (value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 3. Growth Chart
+            new Chart(document.getElementById('growthChart'), {
+                type: 'line',
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        label: 'Growth %',
+                        data: data.growth,
+                        borderColor: '#3d405b', // Charcoal
+                        backgroundColor: 'rgba(61, 64, 91, 0.1)',
+                        fill: true,
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    ...commonOptions,
+                    scales: {
+                        y: {
+                            ticks: {
+                                callback: function (value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            // 4. TAT Performance Chart
+            new Chart(document.getElementById('tatChart'), {
+                type: 'line',
+                data: {
+                    labels: data.labels,
+                    datasets: [{
+                        label: '% Delivered within TAT',
+                        data: data.tat_pct,
+                        borderColor: '#81b29a', // Sage Green
+                        backgroundColor: 'rgba(129, 178, 154, 0.1)',
+                        fill: true,
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    ...commonOptions,
+                    scales: {
+                        y: {
+                            min: 0,
+                            max: 100,
+                            ticks: {
+                                callback: function (value) {
+                                    return value + '%';
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        loadCharts();
+    </script>
+</body>
+
+</html>

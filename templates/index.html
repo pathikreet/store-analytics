@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Store Analytics Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Store Analytics</h1>
+            <div class="search-bar">
+                <input type="text" id="searchInput" placeholder="Search by Name, City, State...">
+            </div>
+        </header>
+
+        <div class="table-container">
+            <table id="storesTable">
+                <thead>
+                    <tr>
+                        <th>
+                            Code
+                            <input type="text" id="filterCode" placeholder="Filter..." class="filter-input">
+                        </th>
+                        <th>
+                            Store Name
+                            <input type="text" id="filterName" placeholder="Filter..." class="filter-input">
+                        </th>
+                        <th>
+                            City
+                            <input type="text" id="filterCity" placeholder="Filter..." class="filter-input">
+                        </th>
+                        <th>
+                            State
+                            <input type="text" id="filterState" placeholder="Filter..." class="filter-input">
+                        </th>
+                        <th>
+                            Status
+                            <select id="filterStatus" class="filter-input">
+                                <option value="">All</option>
+                                <option value="active">Active</option>
+                                <option value="inactive">Inactive</option>
+                                <option value="closed">Closed</option>
+                            </select>
+                        </th>
+                        <th>
+                            Avg TAT %
+                        </th>
+                        <th>Launch Date</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    <!-- Rows will be populated by JS -->
+                </tbody>
+            </table>
+        </div>
+
+        <div class="pagination-container">
+            <div class="rows-per-page">
+                Rows per page:
+                <select id="limitSelect">
+                    <option value="10">10</option>
+                    <option value="25">25</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+            </div>
+            <div class="pagination-info" id="paginationInfo">
+                Showing 0 to 0 of 0 entries
+            </div>
+            <div class="pagination-buttons">
+                <button id="firstBtn" disabled>&laquo; First</button>
+                <button id="prevBtn" disabled>&lsaquo; Prev</button>
+                <span id="pageInfo">Page 1</span>
+                <button id="nextBtn">Next &rsaquo;</button>
+                <button id="lastBtn">Last &raquo;</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentPage = 1;
+        let currentLimit = 10;
+        let currentSearch = '';
+        let totalPages = 1;
+
+        async function loadData() {
+            // Collect Filter Values
+            const fCode = document.getElementById('filterCode').value;
+            const fName = document.getElementById('filterName').value;
+            const fCity = document.getElementById('filterCity').value;
+            const fState = document.getElementById('filterState').value;
+            const fStatus = document.getElementById('filterStatus').value;
+
+            const params = new URLSearchParams({
+                page: currentPage,
+                limit: currentLimit,
+                search: currentSearch,
+                code: fCode,
+                name: fName,
+                city: fCity,
+                state: fState,
+                status: fStatus
+            });
+
+            const res = await fetch(`/api/stores?${params.toString()}`);
+            const data = await res.json();
+
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = '';
+
+            if (data.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">No records found</td></tr>';
+                document.getElementById('paginationInfo').innerText = 'Showing 0 to 0 of 0 entries';
+                updateButtons(0, 0);
+                return;
+            }
+
+            data.data.forEach(store => {
+                const row = `
+                    <tr>
+                        <td><span class="badge code">${store.store_code}</span></td>
+                        <td class="store-name">${store.store_name}</td>
+                        <td>${store.city}</td>
+                        <td>${store.state}</td>
+                        <td><span class="status-badge ${store.status.toLowerCase()}">${store.status}</span></td>
+                        <td>${store.avg_tat}%</td>
+                        <td>${store.launch_date}</td>
+                        <td>
+                            <a href="/analytics/${store.store_code}" class="btn-analytics">View Analytics</a>
+                        </td>
+                    </tr>
+                `;
+                tbody.innerHTML += row;
+            });
+
+            // Update Stats
+            const start = (data.page - 1) * data.limit + 1;
+            const end = Math.min(start + data.limit - 1, data.total);
+            document.getElementById('paginationInfo').innerText = `Showing ${start} to ${end} of ${data.total} entries`;
+
+            // Update Page Info and Buttons
+            totalPages = Math.ceil(data.total / data.limit);
+            document.getElementById('pageInfo').innerText = `Page ${data.page} of ${totalPages}`;
+            updateButtons(data.page, totalPages);
+        }
+
+        function updateButtons(page, total) {
+            document.getElementById('firstBtn').disabled = page <= 1;
+            document.getElementById('prevBtn').disabled = page <= 1;
+            document.getElementById('nextBtn').disabled = page >= total;
+            document.getElementById('lastBtn').disabled = page >= total;
+        }
+
+        // Event Listeners for Filters
+        document.querySelectorAll('.filter-input').forEach(input => {
+            input.addEventListener('input', () => {
+                currentPage = 1;
+                loadData();
+            });
+        });
+
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            currentSearch = e.target.value;
+            currentPage = 1; // Reset to page 1 on search
+            loadData();
+        });
+
+        document.getElementById('limitSelect').addEventListener('change', (e) => {
+            currentLimit = parseInt(e.target.value);
+            currentPage = 1;
+            loadData();
+        });
+
+        document.getElementById('prevBtn').addEventListener('click', () => {
+            if (currentPage > 1) {
+                currentPage--;
+                loadData();
+            }
+        });
+
+        document.getElementById('nextBtn').addEventListener('click', () => {
+            if (currentPage < totalPages) {
+                currentPage++;
+                loadData();
+            }
+        });
+
+        document.getElementById('firstBtn').addEventListener('click', () => {
+            currentPage = 1;
+            loadData();
+        });
+
+        document.getElementById('lastBtn').addEventListener('click', () => {
+            currentPage = totalPages;
+            loadData();
+        });
+
+        // Initial Load
+        loadData();
+    </script>
+</body>
+
+</html>

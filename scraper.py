@@ -1,24 +1,23 @@
 import os
-import requests
+import time
+import random
+import argparse
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+from playwright.sync_api import sync_playwright
 
-load_dotenv()
+load_dotenv(override=True)
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Scrape store analytics data in batches.")
+    parser.add_argument('--start', type=int, default=1, help='Starting store code index (e.g., 1 for A001)')
+    parser.add_argument('--size', type=int, default=50, help='Number of stores to scrape in this batch')
+    return parser.parse_args()
 
 def main():
     """
-    This script logs into the Tumble Dry website, navigates to the TMS Support Hub
-    to establish a session, then navigates to a specific store's summary page to
-    scrape its information and yearly summary data.
-
-    **IMPORTANT:**
-    This script makes several assumptions about the HTML structure of the target page.
-    If the script fails to extract the data correctly, you may need to provide me with the
-    HTML source of the page so I can adjust the parsing logic. To get the HTML source:
-    1. Log in to the website in your browser.
-    2. Navigate to the page you want to scrape.
-    3. Right-click anywhere on the page and select "View Page Source" or "Inspect".
-    4. Copy the entire HTML content and provide it to me.
+    Logs into the Tumbledry website using Playwright to handle the complex session flow
+    and WAF protections. Navigates to the store summary page and scrapes the data.
     """
     username = os.getenv("USERNAME")
     password = os.getenv("PASSWORD")
@@ -28,91 +27,248 @@ def main():
         return
 
     login_url = "https://simplifytumbledry.in/home/login"
-    # The support hub URL is needed to establish the session on the tms subdomain.
-    support_hub_url = "https://tms.simplifytumbledry.in/client/tickets"
-    target_url = "https://tms.simplifytumbledry.in/mis/store_summary_yearly?store_code=A673"
+    
+    # Parse CLI arguments
+    args = parse_arguments()
 
-    with requests.Session() as session:
+    with sync_playwright() as p:
+        print("Launching browser...")
+        # Headless mode is safer for servers, but set headless=False if debugging is needed
+        browser = p.chromium.launch(headless=True)
+        # Use a realistic User-Agent to match the curl success
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
+
         try:
-            # --- Step 1: Get the main login page to find the CSRF token ---
-            print(f"Attempting to get login page: {login_url}")
-            login_page_response = session.get(login_url)
-            login_page_response.raise_for_status()
-            soup = BeautifulSoup(login_page_response.text, 'html.parser')
-            print("Login page fetched successfully.")
+            # --- Step 1: Login ---
+            print(f"Navigating to login page: {login_url}")
+            page.goto(login_url)
+            
+            # Wait for form to be ready
+            page.wait_for_selector("input[name='user_name']")
 
-            # Assumption: The CSRF token is in an input field with the name 'csrf_token'.
-            csrf_token_input = soup.find('input', {'name': 'csrf_token'})
-            csrf_token = csrf_token_input['value'] if csrf_token_input else ''
+            print("Filling credentials...")
+            # Use type instead of fill to mimic human typing
+            page.click("input[name='user_name']")
+            page.type("input[name='user_name']", username, delay=100)
+            
+            page.click("input[name='password']")
+            page.type("input[name='password']", password, delay=100)
+            
+            # Verify inputs were filled
+            user_val = page.input_value("input[name='user_name']")
+            pass_val = page.input_value("input[name='password']")
+            print(f"Verified inputs - User: {user_val}, Password: {'*' * len(pass_val)}")
+            
+            print("Submitting login form...")
+            page.click("button[type='submit']")
+            
+            # Wait for navigation - use domcontentloaded which is faster, or verify URL change
+            try:
+                page.wait_for_url("**/home/dashboard", timeout=10000) # Assumption: goes to dashboard
+            except:
+                print("URL did not change to dashboard (or timeout).")
+            
+            page.wait_for_load_state('networkidle')
+            print(f"Post-login URL: {page.url}")
+            print(f"Post-login Title: {page.title()}")
 
-            if not csrf_token:
-                print("Could not find CSRF token. Trying to log in without it.")
+            # --- Step 2: Access Support Hub (Session Activation) ---
+            print("Looking for 'Support Hub' to activate session...")
+            
+            # Try multiple selectors
+            support_hub_mw = page.locator("h5.card-title", has_text="Support Hub")
+            if not support_hub_mw.count():
+                 # Fallback to simple text
+                 support_hub_mw = page.get_by_text("Support Hub", exact=False)
 
-            # --- Step 2: Send the POST request to log in ---
-            login_data = {
-                'username': username,
-                'password': password,
-                'csrf_token': csrf_token,
-                'submit': 'Login' # Assumption: The submit button has the name 'submit'.
-            }
-
-            print("Sending login request...")
-            login_response = session.post(login_url, data=login_data)
-            login_response.raise_for_status()
-
-            # Check if login was successful by looking for the "Support Hub" card.
-            soup = BeautifulSoup(login_response.text, 'html.parser')
-            support_hub_card = soup.find('h5', class_='card-title', string='Support Hub')
-
-            if not support_hub_card:
-                print("Login failed. Could not find 'Support Hub' card. Please check your credentials.")
+            if not support_hub_mw.count():
+                print("Login failed or 'Support Hub' card not found.")
+                print("Taking screenshot for usage analysis...")
+                page.screenshot(path="debug_login.png")
+                print("--- Page Text Content ---")
+                print(page.inner_text("body"))
+                print("-------------------------")
                 return
 
-            print("Login successful!")
+            print("Found Support Hub. Clicking to open new session tab...")
+            with context.expect_page() as new_page_info:
+                support_hub_mw.click()
+            
+            session_page = new_page_info.value
+            session_page.wait_for_load_state()
+            print(f"Session activated. New tab URL: {session_page.url}")
 
-            # --- Step 3: Navigate to the Support Hub to activate the session ---
-            print(f"Navigating to Support Hub to establish session: {support_hub_url}")
-            session.get(support_hub_url).raise_for_status()
-            print("Session established.")
+            # --- Step 3: Batch Process Stores ---
+            # Generate store codes based on CLI args
+            start_index = args.start
+            end_index = start_index + args.size
+            stores_to_scrape = [f"A{i:03d}" for i in range(start_index, end_index)]
+            
+            print(f"Starting batch process for {len(stores_to_scrape)} stores: A{start_index:03d} to A{end_index-1:03d}")
+            
+            # Initialize DB execution
+            from tinydb import TinyDB
+            db = TinyDB('stores_db.json')
+            
+            # Add strict rate limiting
+            for store_code in stores_to_scrape:
+                print(f"\nProcessing Store: {store_code}")
+                try:
+                    rows_extracted = process_store(session_page, store_code, db)
+                    
+                    if rows_extracted > 0:
+                        delay = random.uniform(2, 4)
+                        print(f"Sleeping for {delay:.2f} seconds...")
+                        time.sleep(delay)
+                    else:
+                        print("0 records found. Skipping delay.")
+                    
+                except Exception as e:
+                    error_msg = str(e)
+                    print(f"Failed to process {store_code}: {error_msg}")
+                    if "ERR_NETWORK_IO_SUSPENDED" in error_msg:
+                        print("CRITICAL: Network IO Suspended. Stopping batch to prevent further errors.")
+                        break
+            
+            print("Batch processing complete.")
 
-            # --- Step 4: Fetch the target page ---
-            print(f"Fetching target page: {target_url}")
-            target_page_response = session.get(target_url)
-            target_page_response.raise_for_status()
-            print("Target page fetched successfully.")
-
-            # --- Step 5: Parse the target page content ---
-            page_soup = BeautifulSoup(target_page_response.text, 'html.parser')
-
-            print("\n--- Store Information ---")
-            store_name_label = page_soup.find(text="Store")
-            store_code_label = page_soup.find(text="Code")
-            launch_date_label = page_soup.find(text="Launch")
-
-            store_name = store_name_label.find_next().text.strip() if store_name_label else "Not found"
-            store_code = store_code_label.find_next().text.strip() if store_code_label else "Not found"
-            launch_date = launch_date_label.find_next().text.strip() if launch_date_label else "Not found"
-
-            print(f"Store: {store_name}")
-            print(f"Code: {store_code}")
-            print(f"Launch: {launch_date}")
-
-
-            print("\n--- Yearly Summary ---")
-            table = page_soup.find('table')
-            if table:
-                headers = [th.text.strip() for th in table.find_all('th')]
-                print(", ".join(headers))
-
-                rows = table.find('tbody').find_all('tr') if table.find('tbody') else table.find_all('tr')[1:]
-                for row in rows:
-                    cols = [td.text.strip() for td in row.find_all('td')]
-                    print(", ".join(cols))
-            else:
-                print("Could not find the data table on the page.")
-
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"An error occurred: {e}")
+            # Optionally take a screenshot on error
+            # page.screenshot(path="error.png")
+        finally:
+            browser.close()
+
+
+def process_store(session_page, store_code, db):
+    target_url = f"https://tms.simplifytumbledry.in/mis/store_summary_yearly?store_code={store_code}"
+    print(f"Navigating to: {target_url}")
+    
+    session_page.goto(target_url)
+    try:
+        session_page.wait_for_load_state("networkidle", timeout=30000)
+    except:
+        print("Timeout waiting for networkidle, proceeding...")
+
+    html_content = session_page.content()
+    
+    if "Login" in session_page.title():
+        raise Exception("Session Expired/Redirected to Login")
+
+    page_soup = BeautifulSoup(html_content, 'html.parser')
+
+    def get_text_from_selector(soup, selector, prefix):
+        element = soup.select_one(selector)
+        if element:
+            return element.get_text(strip=True).replace(prefix, "").strip()
+        return "Not found"
+
+    store_name = get_text_from_selector(page_soup, "span.label-primary", "Store:")
+    extracted_code = get_text_from_selector(page_soup, "span.label-info", "Code:")
+    launch_date = get_text_from_selector(page_soup, "span.label-success", "Launch:")
+
+    print(f"Store: {store_name}, Code: {extracted_code}")
+
+    if extracted_code != "Not found" and extracted_code != store_code:
+        print(f"Warning: Requested {store_code} but Page showed {extracted_code}")
+
+    yearly_data = []
+    table = page_soup.find('table', id='ticket-table')
+    if not table:
+        tables = page_soup.find_all('table', class_='dataTable')
+        for t in tables:
+                if t.find('tbody') and len(t.find('tbody').find_all('tr')) > 0:
+                    table = t
+                    break
+    
+    if table:
+        header_table = page_soup.select_one(".dataTables_scrollHeadInner table")
+        if header_table:
+            headers = [th.text.strip() for th in header_table.find_all('th')]
+        else:
+            headers = [th.text.strip() for th in table.find_all('th')]
+        
+        headers = [h for h in headers if h]
+        
+        rows = table.find('tbody').find_all('tr') if table.find('tbody') else []
+        for row in rows:
+            cols = [td.text.strip() for td in row.find_all('td')]
+            if len(cols) == len(headers):
+                row_data = dict(zip(headers, cols))
+                yearly_data.append(row_data)
+        
+        print(f"Extracted {len(yearly_data)} rows.")
+    else:
+        print("Data table not found.")
+
+    from tinydb import Query
+    from datetime import datetime
+
+    from geopy.geocoders import Nominatim
+    from geopy.exc import GeocoderTimedOut
+
+    # --- Location & Status Logic ---
+    city = "Unknown"
+    state = "Unknown"
+    
+    # Determine Status
+    # Logic:
+    # - Closed: Store info missing ("Not found" or empty) BUT has data.
+    # - Inactive: Store info missing AND no data.
+    # - Active: Store info present.
+    
+    info_missing = (store_name == "Not found" or not store_name) or (extracted_code == "Not found" or not extracted_code)
+    has_data = len(yearly_data) > 0
+    
+    if info_missing:
+        status = "Closed" if has_data else "Inactive"
+    else:
+        status = "Active"
+
+    if status == "Active":
+        try:
+            geolocator = Nominatim(user_agent="tumbledry_scraper_analytics")
+            location = geolocator.geocode(store_name, addressdetails=True, timeout=5)
+            if location:
+                address = location.raw.get('address', {})
+                city = address.get('city') or address.get('town') or address.get('village') or address.get('county') or "Unknown"
+                state = address.get('state', "Unknown")
+            else:
+                # Fallback: Try cleaning the name (remove code/digits)
+                clean_name = ''.join([i for i in store_name if not i.isdigit()]).strip()
+                location = geolocator.geocode(clean_name, addressdetails=True, timeout=5)
+                if location:
+                    address = location.raw.get('address', {})
+                    city = address.get('city') or address.get('town') or address.get('village') or "Unknown"
+                    state = address.get('state', "Unknown")
+        except Exception as e:
+            print(f"Geocoding error for {store_name}: {e}")
+
+    # --- Save Record ---
+    Store = Query()
+    store_record = {
+        "store_code": store_code,
+        "store_name": store_name,
+        "status": status,
+        "launch_date": launch_date,
+        "last_updated_at": datetime.now().isoformat(),
+        "yearly_data": yearly_data
+    }
+    
+    # Only update city/state if we have valid data
+    # This preserves existing DB values if we failed to fetch new ones (e.g. store is closed)
+    # and avoids an extra DB read.
+    if city != "Unknown":
+        store_record["city"] = city
+    if state != "Unknown":
+        store_record["state"] = state
+    
+    db.upsert(store_record, Store.store_code == store_code)
+    print(f"Saved {store_code}. Status: {status}, Location: {city}, {state}")
+    return len(yearly_data)
 
 if __name__ == "__main__":
     main()
