@@ -74,6 +74,20 @@ def api_stores():
             'launch_date': r.get('launch_date', 'Unknown'),
             'avg_tat': round(avg_tat, 1)
         })
+    
+    # Sorting
+    sort_by = request.args.get('sort_by', '')
+    order = request.args.get('order', 'asc')
+    
+    if sort_by:
+        reverse = (order == 'desc')
+        def get_sort_val(x):
+            val = x.get(sort_by)
+            if val is None: return 0 if sort_by in ['avg_tat'] else ''
+            if isinstance(val, str): return val.lower()
+            return val
+            
+        filtered_records.sort(key=get_sort_val, reverse=reverse)
         
     total_count = len(filtered_records)
     start = (page - 1) * limit
@@ -195,6 +209,29 @@ def get_highest_month(months, revenue):
     max_rev = max(revenue)
     index = revenue.index(max_rev)
     return {"month": months[index], "amount": max_rev}
+
+@app.route('/api/update_locations', methods=['POST'])
+def update_locations():
+    data = request.json
+    updates = data.get('updates', [])
+    count = 0
+    
+    Store = Query()
+    for item in updates:
+        store_code = item.get('storeCode')
+        city = item.get('city')
+        state = item.get('state')
+        
+        if store_code:
+            payload = {}
+            if city is not None: payload['city'] = city
+            if state is not None: payload['state'] = state
+            
+            if payload:
+                db.update(payload, Store.store_code == store_code)
+                count += 1
+                
+    return jsonify({'success': True, 'updated': count})
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)

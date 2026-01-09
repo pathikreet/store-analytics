@@ -13,8 +13,13 @@
     <div class="container">
         <header>
             <h1>Store Analytics</h1>
-            <div class="search-bar">
-                <input type="text" id="searchInput" placeholder="Search by Name, City, State...">
+            <div class="header-actions">
+                <button id="saveBtn" class="save-btn" onclick="saveChanges()" style="display: none;">
+                    <span id="saveSpinner" class="spinner"></span> Save Changes
+                </button>
+                <div class="search-bar">
+                    <input type="text" id="searchInput" placeholder="Search by Name, City, State...">
+                </div>
             </div>
         </header>
 
@@ -47,11 +52,13 @@
                                 <option value="closed">Closed</option>
                             </select>
                         </th>
-                        <th>
-                            Avg TAT %
+                        <th onclick="toggleSort('avg_tat')" style="cursor: pointer;">
+                            Avg TAT % <span id="sort-avg_tat" class="sort-icon"></span>
                         </th>
                         <th>Launch Date</th>
-                        <th>Actions</th>
+                        <th>
+                            Actions
+                        </th>
                     </tr>
                 </thead>
                 <tbody id="tableBody">
@@ -83,10 +90,29 @@
         </div>
     </div>
 
+    <!-- Overlay -->
+    <div id="updateOverlay" class="overlay" style="display: none;">
+        <div class="overlay-content">
+            <div class="spinner large"></div>
+            <p>Updating records...</p>
+        </div>
+    </div>
+
+    <!-- Message Modal -->
+    <div id="messageModal" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <h3 id="modalTitle">Title</h3>
+            <p id="modalMessage">Message content goes here.</p>
+            <button class="modal-btn" onclick="closeModal()">Close</button>
+        </div>
+    </div>
+
     <script>
         let currentPage = 1;
         let currentLimit = 10;
         let currentSearch = '';
+        let currentSort = '';
+        let currentOrder = 'asc';
         let totalPages = 1;
 
         async function loadData() {
@@ -105,8 +131,17 @@
                 name: fName,
                 city: fCity,
                 state: fState,
-                status: fStatus
+                status: fStatus,
+                sort_by: currentSort,
+                order: currentOrder
             });
+
+            // Update Sort Icons
+            document.querySelectorAll('.sort-icon').forEach(el => el.innerText = '');
+            if (currentSort) {
+                const icon = currentOrder === 'asc' ? '↑' : '↓';
+                document.getElementById(`sort-${currentSort}`).innerText = icon;
+            }
 
             const res = await fetch(`/api/stores?${params.toString()}`);
             const data = await res.json();
@@ -126,8 +161,8 @@
                     <tr>
                         <td><span class="badge code">${store.store_code}</span></td>
                         <td class="store-name">${store.store_name}</td>
-                        <td>${store.city}</td>
-                        <td>${store.state}</td>
+                        <td onclick="editCell(this, 'city', '${store.store_code}')" class="editable-cell">${store.city}</td>
+                        <td onclick="editCell(this, 'state', '${store.store_code}')" class="editable-cell">${store.state}</td>
                         <td><span class="status-badge ${store.status.toLowerCase()}">${store.status}</span></td>
                         <td>${store.avg_tat}%</td>
                         <td>${store.launch_date}</td>
@@ -200,6 +235,107 @@
             currentPage = totalPages;
             loadData();
         });
+
+        function toggleSort(field) {
+            if (currentSort === field) {
+                currentOrder = currentOrder === 'asc' ? 'desc' : 'asc';
+            } else {
+                currentSort = field;
+                currentOrder = 'desc'; // Default to high-to-low for stats
+            }
+            loadData();
+        }
+
+
+
+        // --- Manual Editing Logic ---
+        const pendingUpdates = {}; // { storeCode: { city: val, state: val } }
+
+        function editCell(td, field, storeCode) {
+            if (td.querySelector('input')) return; // Already editing
+
+            const currentVal = td.innerText;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = currentVal;
+            input.className = 'edit-input';
+
+            input.onblur = () => {
+                const newVal = input.value.trim();
+                td.innerText = newVal;
+
+                if (newVal !== currentVal) {
+                    if (!pendingUpdates[storeCode]) pendingUpdates[storeCode] = { storeCode: storeCode };
+                    pendingUpdates[storeCode][field] = newVal;
+
+                    document.getElementById('saveBtn').style.display = 'inline-block';
+                    td.classList.add('modified');
+                }
+            };
+
+            input.onkeypress = (e) => {
+                if (e.key === 'Enter') input.blur();
+            };
+
+            td.innerText = '';
+            td.appendChild(input);
+            input.focus();
+        }
+
+        // Modal Logic
+        function showModal(title, message, isSuccess = true) {
+            const modal = document.getElementById('messageModal');
+            document.getElementById('modalTitle').innerText = title;
+            document.getElementById('modalMessage').innerText = message;
+
+            const btn = modal.querySelector('.modal-btn');
+            if (isSuccess) {
+                btn.className = 'modal-btn success';
+                btn.innerText = 'Great!';
+            } else {
+                btn.className = 'modal-btn error';
+                btn.innerText = 'Close';
+            }
+
+            modal.style.display = 'flex';
+        }
+
+        function closeModal() {
+            document.getElementById('messageModal').style.display = 'none';
+        }
+
+        async function saveChanges() {
+            const updates = Object.values(pendingUpdates);
+            if (updates.length === 0) return;
+
+            const overlay = document.getElementById('updateOverlay');
+            overlay.style.display = 'flex';
+
+            try {
+                const res = await fetch('/api/update_locations', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ updates })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    setTimeout(() => {
+                        overlay.style.display = 'none';
+                        showModal('Success!', `Successfully updated ${data.updated} records.`, true);
+                        // Reload after closing modal
+                        document.querySelector('.modal-btn.success').onclick = () => location.reload();
+                    }, 500);
+                } else {
+                    overlay.style.display = 'none';
+                    showModal('Error', 'Update failed.', false);
+                }
+            } catch (e) {
+                console.error(e);
+                overlay.style.display = 'none';
+                showModal('Error', 'An error occurred while updating.', false);
+            }
+        }
 
         // Initial Load
         loadData();
